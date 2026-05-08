@@ -1,0 +1,29 @@
+{
+    "project_dir": "/mnt/Chamber/dev/RTSpeed-Firmware/STM32F411CEU6-Test",
+    "build_cmd": "make -j4",
+    "flash_cmd": "st-flash --reset write build/*.bin 0x8000000",
+    "gains": {
+        "iq_p": 1,
+        "iq_i": 0,
+        "iq_d": 0,
+        "id_p": 1,
+        "id_i": 0,
+        "id_d": 0,
+        "speed_p": 1,
+        "speed_i": 0,
+        "speed_d": 0
+    },
+    "presets": {
+        "test": {
+            "iq_p": 1,
+            "iq_i": 0,
+            "iq_d": 0,
+            "id_p": 1,
+            "id_i": 0,
+            "id_d": 0,
+            "speed_p": 1,
+            "speed_i": 0,
+            "speed_d": 0
+        }
+    }
+}
