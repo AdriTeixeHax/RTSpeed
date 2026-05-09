@@ -207,6 +207,7 @@ struct _App {
     char   *project_dir;
     char   *build_cmd;
     char   *flash_cmd;
+    char   *stlink_dev;
     char   *exe_path;
     double  gains[15];
     double  fuzzy_pid[10];
@@ -215,6 +216,7 @@ struct _App {
     AdwActionRow  *row_proj;
     AdwEntryRow   *row_build;
     AdwEntryRow   *row_flash;
+    AdwEntryRow   *row_stlink;
     GtkSpinButton *spins[25];
     GtkDropDown   *combo_presets;
     GtkStringList *preset_model;
@@ -231,8 +233,9 @@ static void
 config_load(App *a)
 {
     a->project_dir = g_strdup("");
-    a->build_cmd   = g_strdup("make -j4");
-    a->flash_cmd   = g_strdup("st-flash --reset write build/*.bin 0x8000000");
+    a->build_cmd   = g_strdup("make -C Debug");
+    a->flash_cmd   = g_strdup("pkexec st-flash --reset write Debug/STM32F411CEU6-Test.elf 0x8000000");
+    a->stlink_dev  = g_strdup("");
     for (int i = 0; i < 15; i++) a->gains[i] = GAIN_DEFAULTS[i];
     for (int i = 0; i < 10;  i++) a->fuzzy_pid[i] = FUZZY_PID_DEFAULTS[i];
     a->presets = jn_new(JN_OBJ);
@@ -246,9 +249,10 @@ config_load(App *a)
     if (!root) return;
 
     g_free(a->project_dir); a->project_dir = g_strdup(jn_str(root, "project_dir", ""));
-    g_free(a->build_cmd);   a->build_cmd   = g_strdup(jn_str(root, "build_cmd", "make -j4"));
+    g_free(a->build_cmd);   a->build_cmd   = g_strdup(jn_str(root, "build_cmd", "make -C Debug"));
     g_free(a->flash_cmd);   a->flash_cmd   = g_strdup(jn_str(root, "flash_cmd",
-                                              "st-flash --reset write build/*.bin 0x8000000"));
+                                              "pkexec st-flash --reset write Debug/STM32F411CEU6-Test.elf 0x8000000"));
+    g_free(a->stlink_dev);  a->stlink_dev  = g_strdup(jn_str(root, "stlink_dev", ""));
 
     JNode *gains = jn_obj(root, "gains");
     for (int i = 0; i < 15; i++)
@@ -282,6 +286,10 @@ config_save(App *a)
 
     g_string_append(out, "    \"flash_cmd\": ");
     gs_append_str_escaped(out, gtk_editable_get_text(GTK_EDITABLE(a->row_flash)));
+    g_string_append(out, ",\n");
+
+    g_string_append(out, "    \"stlink_dev\": ");
+    gs_append_str_escaped(out, gtk_editable_get_text(GTK_EDITABLE(a->row_stlink)));
     g_string_append(out, ",\n");
 
     g_string_append(out, "    \"gains\": {\n");
@@ -371,6 +379,8 @@ typedef struct {
     char  *flash_cmd;
     double gains[15];
     double fuzzy_pid[10];
+    gboolean run_build;
+    gboolean run_flash;
 } FlashData;
 
 static gboolean
@@ -388,6 +398,8 @@ static gboolean
 run_cmd_in_dir(App *a, const char *cwd, const char *cmd)
 {
     char msg[1024];
+    g_snprintf(msg, sizeof(msg), "Running in: %s\n", cwd);
+    log_append(a, msg);
     g_snprintf(msg, sizeof(msg), "$ %s\n", cmd);
     log_append(a, msg);
 
@@ -427,11 +439,6 @@ run_cmd_in_dir(App *a, const char *cwd, const char *cmd)
     return ok;
 }
 
-static char *fmt_float(double v)
-{
-    return g_strdup_printf("%.2ff", v);
-}
-
 static gpointer
 flash_thread(gpointer data)
 {
@@ -464,12 +471,16 @@ flash_thread(gpointer data)
          adw_message_dialog_set_response_appearance(
              ADW_MESSAGE_DIALOG(dialog), "sudo", ADW_RESPONSE_DESTRUCTIVE);
 
-         FlashData *fddup = g_new0(FlashData, 1);
-         fddup->app         = a;
-         fddup->project_dir = g_strdup(fd->project_dir);
-         for (int i = 0; i < 15; i++) fddup->gains[i] = fd->gains[i];
-         for (int i = 0; i < 10;  i++) fddup->fuzzy_pid[i] = fd->fuzzy_pid[i];
-         g_object_set_data_full(G_OBJECT(dialog), "relaunch-data", fddup, g_free);
+FlashData *fddup = g_new0(FlashData, 1);
+          fddup->app         = a;
+          fddup->project_dir = g_strdup(fd->project_dir);
+          fddup->build_cmd   = g_strdup(fd->build_cmd);
+          fddup->flash_cmd   = g_strdup(fd->flash_cmd);
+          fddup->run_build   = fd->run_build;
+          fddup->run_flash  = fd->run_flash;
+          for (int i = 0; i < 15; i++) fddup->gains[i] = fd->gains[i];
+          for (int i = 0; i < 10;  i++) fddup->fuzzy_pid[i] = fd->fuzzy_pid[i];
+          g_object_set_data_full(G_OBJECT(dialog), "relaunch-data", fddup, g_free);
          g_object_set_data(G_OBJECT(dialog), "app-pointer", a);
 
          g_signal_connect(dialog, "response", G_CALLBACK(on_sudo_dialog_response), NULL);
@@ -505,10 +516,46 @@ flash_thread(gpointer data)
      log_append(a, msg);
      g_free(hpath);
 
+     if (fd->run_build && fd->build_cmd && fd->build_cmd[0]) {
+         log_append(a, "Building...\n");
+         if (!run_cmd_in_dir(a, fd->project_dir, fd->build_cmd)) {
+             log_append(a, "Build failed.\n");
+             goto done;
+         }
+         log_append(a, "Build successful.\n");
+     }
+
+if (fd->run_flash && fd->flash_cmd && fd->flash_cmd[0]) {
+          log_append(a, "Flashing...\n");
+
+          char test_cmd[256];
+          g_snprintf(test_cmd, sizeof(test_cmd), "st-flash --version 2>&1 | head -1");
+          if (!run_cmd_in_dir(a, fd->project_dir, test_cmd)) {
+              log_append(a, "\n*** ERROR: Cannot access ST-Link device ***\n\n");
+              log_append(a, "Permission denied. To fix this, you have two options:\n\n");
+              log_append(a, "Option 1 - Add udev rule (permanent):\n");
+              log_append(a, "  echo 'ATTR{idVendor}==\"0483\", ATTR{idProduct}==\"3748\", MODE=\"0666\"' | sudo tee /etc/udev/rules.d/99-stlink.rules\n");
+              log_append(a, "  sudo udevadm reload\n");
+              log_append(a, "  Then unplug and replug your ST-Link.\n\n");
+              log_append(a, "Option 2 - Use pkexec (each time):\n");
+              log_append(a, "  In Configure page, prepend 'pkexec ' to Flash Command.\n");
+              log_append(a, "  Example: pkexec st-flash --reset write Debug/STM32F411CEU6-Test.elf 0x8000000\n\n");
+              goto done;
+          }
+
+          if (!run_cmd_in_dir(a, fd->project_dir, fd->flash_cmd)) {
+              log_append(a, "Flash failed.\n");
+              goto done;
+          }
+          log_append(a, "Flash successful.\n");
+      }
+
      log_append(a, "Done!\n");
 
 done:
      g_free(fd->project_dir);
+     g_free(fd->build_cmd);
+     g_free(fd->flash_cmd);
      g_free(fd);
      g_idle_add(flash_done_idle, a);
      return NULL;
@@ -565,6 +612,37 @@ on_sudo_dialog_response(AdwDialog *dialog, char *resp, gpointer user_data)
 
         if (run_cmd_in_dir(app, fd->project_dir, cmd)) {
             log_append(app, "Wrote pid_gains.h with sudo\n");
+
+            if (fd->run_build && fd->build_cmd && fd->build_cmd[0]) {
+                log_append(app, "Building...\n");
+                if (!run_cmd_in_dir(app, fd->project_dir, fd->build_cmd)) {
+                    log_append(app, "Build failed.\n");
+                    gtk_widget_set_sensitive(GTK_WIDGET(app->btn_flash), TRUE);
+                    g_free(fd->project_dir);
+                    g_free(fd->build_cmd);
+                    g_free(fd->flash_cmd);
+                    g_free(fd);
+                    gtk_window_destroy(GTK_WINDOW(dialog));
+                    return;
+                }
+                log_append(app, "Build successful.\n");
+            }
+
+            if (fd->run_flash && fd->flash_cmd && fd->flash_cmd[0]) {
+                log_append(app, "Flashing...\n");
+                if (!run_cmd_in_dir(app, fd->project_dir, fd->flash_cmd)) {
+                    log_append(app, "Flash failed.\n");
+                    gtk_widget_set_sensitive(GTK_WIDGET(app->btn_flash), TRUE);
+                    g_free(fd->project_dir);
+                    g_free(fd->build_cmd);
+                    g_free(fd->flash_cmd);
+                    g_free(fd);
+                    gtk_window_destroy(GTK_WINDOW(dialog));
+                    return;
+                }
+                log_append(app, "Flash successful.\n");
+            }
+
             log_append(app, "Done!\n");
         } else {
             log_append(app, "Failed to write file\n");
@@ -573,9 +651,13 @@ on_sudo_dialog_response(AdwDialog *dialog, char *resp, gpointer user_data)
         gtk_widget_set_sensitive(GTK_WIDGET(app->btn_flash), TRUE);
 
         g_free(fd->project_dir);
+        g_free(fd->build_cmd);
+        g_free(fd->flash_cmd);
         g_free(fd);
     } else if (fd) {
         g_free(fd->project_dir);
+        g_free(fd->build_cmd);
+        g_free(fd->flash_cmd);
         g_free(fd);
         if (app) gtk_widget_set_sensitive(GTK_WIDGET(app->btn_flash), TRUE);
     }
@@ -685,6 +767,20 @@ on_delete_preset(GtkButton *btn, gpointer user_data)
     config_save(a);
 }
 
+/* ── Copy log callback ─────────────────────────────────────────── */
+
+static void
+on_copy_log(GtkButton *btn, gpointer user_data)
+{
+    App *a = user_data;
+    GtkTextIter start, end;
+    gtk_text_buffer_get_bounds(a->log_buf, &start, &end);
+    char *text = gtk_text_buffer_get_text(a->log_buf, &start, &end, FALSE);
+    GdkClipboard *clipboard = gtk_widget_get_clipboard(GTK_WIDGET(a->window));
+    gdk_clipboard_set_text(clipboard, text);
+    g_free(text);
+}
+
 /* ── Flash callback ─────────────────────────────────────────────── */
 
 static void
@@ -704,9 +800,13 @@ on_flash_clicked(GtkButton *btn, gpointer user_data)
     FlashData *fd   = g_new0(FlashData, 1);
     fd->app         = a;
     fd->project_dir = g_strdup(a->project_dir);
+    fd->build_cmd   = g_strdup(gtk_editable_get_text(GTK_EDITABLE(a->row_build)));
+    fd->flash_cmd   = g_strdup(gtk_editable_get_text(GTK_EDITABLE(a->row_flash)));
+    fd->run_build   = TRUE;
+    fd->run_flash  = TRUE;
     for (int i = 0; i < 15; i++) fd->gains[i] = gtk_spin_button_get_value(a->spins[i]);
     for (int i = 0; i < 10;  i++) fd->fuzzy_pid[i] = gtk_spin_button_get_value(a->spins[15 + i]);
-    
+
     g_thread_new("flash", flash_thread, fd);
 }
 
@@ -740,6 +840,12 @@ setup_configure_page(App *a, AdwViewStack *stack)
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(a->row_flash), "Flash Command");
     gtk_editable_set_text(GTK_EDITABLE(a->row_flash), a->flash_cmd);
     adw_preferences_group_add(grp, GTK_WIDGET(a->row_flash));
+
+    a->row_stlink = ADW_ENTRY_ROW(adw_entry_row_new());
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(a->row_stlink), "ST-Link Device (optional)");
+    gtk_editable_set_text(GTK_EDITABLE(a->row_stlink), a->stlink_dev ? a->stlink_dev : "");
+    gtk_entry_set_placeholder_text(GTK_ENTRY(a->row_stlink), "/dev/bus/usb/003/027");
+    adw_preferences_group_add(grp, GTK_WIDGET(a->row_stlink));
 
     GtkButton *b_save = GTK_BUTTON(gtk_button_new_with_label("Save Configuration"));
     gtk_widget_add_css_class(GTK_WIDGET(b_save), "suggested-action");
@@ -879,13 +985,13 @@ setup_flash_page(App *a, AdwViewStack *stack)
     gtk_widget_set_margin_end(GTK_WIDGET(box), 24);
 
     AdwStatusPage *status = ADW_STATUS_PAGE(adw_status_page_new());
-    adw_status_page_set_title(status, "Save Configuration");
+    adw_status_page_set_title(status, "Build & Flash");
     adw_status_page_set_description(status,
-        "Apply current gains and save to pid_gains.h");
+        "Write pid_gains.h, build project, and flash to device");
     adw_status_page_set_icon_name(status, "drive-harddisk-symbolic");
     gtk_box_append(box, GTK_WIDGET(status));
 
-    a->btn_flash = GTK_BUTTON(gtk_button_new_with_label("Save to File"));
+    a->btn_flash = GTK_BUTTON(gtk_button_new_with_label("Build & Flash"));
     gtk_widget_add_css_class(GTK_WIDGET(a->btn_flash), "suggested-action");
     gtk_widget_add_css_class(GTK_WIDGET(a->btn_flash), "pill");
     gtk_widget_set_halign(GTK_WIDGET(a->btn_flash), GTK_ALIGN_CENTER);
@@ -913,6 +1019,12 @@ setup_flash_page(App *a, AdwViewStack *stack)
     gtk_frame_set_child(frame, GTK_WIDGET(a->log_scroll));
     gtk_widget_set_vexpand(GTK_WIDGET(frame), TRUE);
     gtk_box_append(box, GTK_WIDGET(frame));
+
+    GtkButton *btn_copy = GTK_BUTTON(gtk_button_new_with_label("Copy Log"));
+    gtk_widget_set_halign(GTK_WIDGET(btn_copy), GTK_ALIGN_CENTER);
+    gtk_widget_set_margin_top(GTK_WIDGET(btn_copy), 8);
+    g_signal_connect(btn_copy, "clicked", G_CALLBACK(on_copy_log), a);
+    gtk_box_append(box, GTK_WIDGET(btn_copy));
 
     adw_view_stack_add_titled_with_icon(stack, GTK_WIDGET(box),
         "flash", "Flash", "media-flash-symbolic");

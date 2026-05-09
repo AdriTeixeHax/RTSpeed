@@ -1,7 +1,8 @@
 {
     "project_dir": "/home/ateixeira/STM32CubeIDE/workspace_1.18.1/STM32F411CEU6-Test",
-    "build_cmd": "make -j4",
-    "flash_cmd": "st-flash --reset write build/*.bin 0x8000000",
+    "build_cmd": "find Debug -name 'subdir.mk' -exec sed -i 's/-fcyclomatic-complexity//g' {} + && make -C Debug all",
+    "flash_cmd": "openocd -s /usr/share/openocd/scripts -f interface/stlink.cfg -f target/stm32f4x.cfg -c \"program /home/ateixeira/STM32CubeIDE/workspace_1.18.1/STM32F411CEU6-Test/Debug/STM32F411CEU6-Test.elf verify reset exit\"",
+    "stlink_dev": "",
     "gains": {
         "iq_p": 1,
         "iq_i": 1,
@@ -29,7 +30,7 @@
         "fuzzy_speed_max": 10,
         "fuzzy_rate_max": 62.8,
         "fuzzy_out_max": 10,
-        "fuzzy_out_min": -10
+        "fuzzy_out_min": -100
     },
     "presets": {
         "Control 1": {
@@ -48,15 +49,15 @@
             "speed_d": 0,
             "speed_sat": 100,
             "speed_low": -100
-            "fuzzy_kp": 0.5,
-            "fuzzy_ki": 0.1,
-            "fuzzy_kd": 0.05,
-            "fuzzy_dkp": 0.3,
-            "fuzzy_dki": 0.05,
-            "fuzzy_dkd": 0.03,
-            "fuzzy_speed_max": 10,
-            "fuzzy_rate_max": 62.8,
-            "fuzzy_out_max": 10
+            "fuzzy_kp": 0,
+            "fuzzy_ki": 0,
+            "fuzzy_kd": 0,
+            "fuzzy_dkp": 0,
+            "fuzzy_dki": 0,
+            "fuzzy_dkd": 0,
+            "fuzzy_speed_max": 0,
+            "fuzzy_rate_max": 0,
+            "fuzzy_out_max": 0
         }
     }
 }
