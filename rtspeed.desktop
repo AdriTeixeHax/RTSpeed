@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=RTSpeed Configurator
+Comment=Custom inverter configuration and flashing tool
+Exec=rtspeed
+Icon=logo.svg
+Terminal=false
+Type=Application
+Categories=Development;Electronics;
+Keywords=PID;STM32;Inverter;Motor;
+StartupWMClass=rtspeed

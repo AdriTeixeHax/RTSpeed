@@ -1,29 +1,62 @@
 {
-    "project_dir": "/mnt/Chamber/dev/RTSpeed-Firmware/STM32F411CEU6-Test",
+    "project_dir": "/home/ateixeira/STM32CubeIDE/workspace_1.18.1/STM32F411CEU6-Test",
     "build_cmd": "make -j4",
     "flash_cmd": "st-flash --reset write build/*.bin 0x8000000",
     "gains": {
         "iq_p": 1,
-        "iq_i": 0,
+        "iq_i": 1,
         "iq_d": 0,
+        "iq_sat": 7,
+        "iq_low": -7,
         "id_p": 1,
-        "id_i": 0,
+        "id_i": 1,
         "id_d": 0,
+        "id_sat": 7,
+        "id_low": -7,
         "speed_p": 1,
-        "speed_i": 0,
-        "speed_d": 0
+        "speed_i": 1,
+        "speed_d": 0,
+        "speed_sat": 100,
+        "speed_low": -100
+    },
+    "fuzzy_pid": {
+        "fuzzy_kp": 0.5,
+        "fuzzy_ki": 0.1,
+        "fuzzy_kd": 0.05,
+        "fuzzy_dkp": 0.3,
+        "fuzzy_dki": 0.05,
+        "fuzzy_dkd": 0.03,
+        "fuzzy_speed_max": 10,
+        "fuzzy_rate_max": 62.8,
+        "fuzzy_out_max": 10,
+        "fuzzy_out_min": -10
     },
     "presets": {
-        "test": {
+        "Control 1": {
             "iq_p": 1,
-            "iq_i": 0,
+            "iq_i": 1,
             "iq_d": 0,
+            "iq_sat": 7,
+            "iq_low": -7,
             "id_p": 1,
-            "id_i": 0,
+            "id_i": 1,
             "id_d": 0,
+            "id_sat": 7,
+            "id_low": -7,
             "speed_p": 1,
-            "speed_i": 0,
-            "speed_d": 0
+            "speed_i": 1,
+            "speed_d": 0,
+            "speed_sat": 100,
+            "speed_low": -100
+            "fuzzy_kp": 0.5,
+            "fuzzy_ki": 0.1,
+            "fuzzy_kd": 0.05,
+            "fuzzy_dkp": 0.3,
+            "fuzzy_dki": 0.05,
+            "fuzzy_dkd": 0.03,
+            "fuzzy_speed_max": 10,
+            "fuzzy_rate_max": 62.8,
+            "fuzzy_out_max": 10
         }
     }
 }

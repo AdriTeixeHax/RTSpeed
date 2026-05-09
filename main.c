@@ -10,15 +10,29 @@
 
 /* ── Constants ─────────────────────────────────────────────────── */
 
-static const char * const GAIN_LABELS[9] = {
-    "Iq P Gain",    "Iq I Gain",    "Iq D Gain",
-    "Id P Gain",    "Id I Gain",    "Id D Gain",
-    "Speed P Gain", "Speed I Gain", "Speed D Gain",
+static const char * const GAIN_LABELS[15] = {
+    "Iq P Gain",       "Iq I Gain",       "Iq D Gain",       "Iq HI",   "Iq LO",
+    "Id P Gain",       "Id I Gain",       "Id D Gain",       "Id HI",   "Id LO",
+    "Speed P Gain",    "Speed I Gain",    "Speed D Gain",    "Speed HI","Speed LO",
 };
-static const char * const GAIN_KEYS[9] = {
-    "iq_p","iq_i","iq_d","id_p","id_i","id_d","speed_p","speed_i","speed_d",
+static const char * const GAIN_KEYS[15] = {
+    "iq_p","iq_i","iq_d","iq_sat","iq_low",
+    "id_p","id_i","id_d","id_sat","id_low",
+    "speed_p","speed_i","speed_d","speed_sat","speed_low",
 };
-static const double GAIN_DEFAULTS[9] = { 1,0,0, 1,0,0, 1,0,0 };
+static const double GAIN_DEFAULTS[15] = { 1,0,0,100,-100, 1,0,0,100,-100, 1,0,0,100,-100 };
+
+static const char * const FUZZY_PID_LABELS[10] = {
+    "Base Kp", "Base Ki", "Base Kd",
+    "Max dKp", "Max dKi", "Max dKd",
+    "Speed Ref Max", "Speed Rate Max", "Output HI Limit", "Output LO Limit",
+};
+static const char * const FUZZY_PID_KEYS[10] = {
+    "fuzzy_kp","fuzzy_ki","fuzzy_kd",
+    "fuzzy_dkp","fuzzy_dki","fuzzy_dkd",
+    "fuzzy_speed_max","fuzzy_rate_max","fuzzy_out_max","fuzzy_out_min",
+};
+static const double FUZZY_PID_DEFAULTS[10] = { 1,0,0, 0.5,0.5,0.5, 10000, 5000, 100,-100 };
 
 /* ── Mini JSON ─────────────────────────────────────────────────── */
 
@@ -193,13 +207,15 @@ struct _App {
     char   *project_dir;
     char   *build_cmd;
     char   *flash_cmd;
-    double  gains[9];
+    char   *exe_path;
+    double  gains[15];
+    double  fuzzy_pid[10];
     JNode  *presets;           /* JN_OBJ: name → JN_OBJ of gains */
 
     AdwActionRow  *row_proj;
     AdwEntryRow   *row_build;
     AdwEntryRow   *row_flash;
-    GtkSpinButton *spins[9];
+    GtkSpinButton *spins[25];
     GtkDropDown   *combo_presets;
     GtkStringList *preset_model;
     GtkEntry      *entry_preset_name;
@@ -217,7 +233,8 @@ config_load(App *a)
     a->project_dir = g_strdup("");
     a->build_cmd   = g_strdup("make -j4");
     a->flash_cmd   = g_strdup("st-flash --reset write build/*.bin 0x8000000");
-    for (int i = 0; i < 9; i++) a->gains[i] = GAIN_DEFAULTS[i];
+    for (int i = 0; i < 15; i++) a->gains[i] = GAIN_DEFAULTS[i];
+    for (int i = 0; i < 10;  i++) a->fuzzy_pid[i] = FUZZY_PID_DEFAULTS[i];
     a->presets = jn_new(JN_OBJ);
     a->presets->obj = jn_new_obj_table();
 
@@ -231,11 +248,15 @@ config_load(App *a)
     g_free(a->project_dir); a->project_dir = g_strdup(jn_str(root, "project_dir", ""));
     g_free(a->build_cmd);   a->build_cmd   = g_strdup(jn_str(root, "build_cmd", "make -j4"));
     g_free(a->flash_cmd);   a->flash_cmd   = g_strdup(jn_str(root, "flash_cmd",
-                                             "st-flash --reset write build/*.bin 0x8000000"));
+                                              "st-flash --reset write build/*.bin 0x8000000"));
 
     JNode *gains = jn_obj(root, "gains");
-    for (int i = 0; i < 9; i++)
+    for (int i = 0; i < 15; i++)
         a->gains[i] = jn_num(gains, GAIN_KEYS[i], GAIN_DEFAULTS[i]);
+
+    JNode *fuzzy = jn_obj(root, "fuzzy_pid");
+    for (int i = 0; i < 9; i++)
+        a->fuzzy_pid[i] = jn_num(fuzzy, FUZZY_PID_KEYS[i], FUZZY_PID_DEFAULTS[i]);
 
     JNode *presets = jn_obj(root, "presets");
     if (presets) {
@@ -264,10 +285,18 @@ config_save(App *a)
     g_string_append(out, ",\n");
 
     g_string_append(out, "    \"gains\": {\n");
-    for (int i = 0; i < 9; i++) {
+    for (int i = 0; i < 15; i++) {
         g_string_append_printf(out, "        \"%s\": %g%s\n",
             GAIN_KEYS[i], gtk_spin_button_get_value(a->spins[i]),
-            i < 8 ? "," : "");
+            i < 14 ? "," : "");
+    }
+    g_string_append(out, "    },\n");
+
+    g_string_append(out, "    \"fuzzy_pid\": {\n");
+    for (int i = 0; i < 10; i++) {
+        g_string_append_printf(out, "        \"%s\": %g%s\n",
+            FUZZY_PID_KEYS[i], gtk_spin_button_get_value(a->spins[15 + i]),
+            i < 9 ? "," : "");
     }
     g_string_append(out, "    },\n");
 
@@ -284,10 +313,15 @@ config_save(App *a)
             gs_append_str_escaped(out, pname);
             g_string_append(out, ": {\n");
             JNode *pnode = g_hash_table_lookup(a->presets->obj, pname);
-            for (int i = 0; i < 9; i++) {
+            for (int i = 0; i < 15; i++) {
                 double v = jn_num(pnode, GAIN_KEYS[i], 0.0);
                 g_string_append_printf(out, "            \"%s\": %g%s\n",
-                    GAIN_KEYS[i], v, i < 8 ? "," : "");
+                    GAIN_KEYS[i], v, i < 14 ? "," : "");
+            }
+            for (int i = 0; i < 9; i++) {
+                double v = jn_num(pnode, FUZZY_PID_KEYS[i], 0.0);
+                g_string_append_printf(out, "            \"%s\": %g%s\n",
+                    FUZZY_PID_KEYS[i], v, i < 8 ? "," : "");
             }
             g_string_append_printf(out, "        }%s\n", idx < total - 1 ? "," : "");
         }
@@ -335,7 +369,8 @@ typedef struct {
     char  *project_dir;
     char  *build_cmd;
     char  *flash_cmd;
-    double gains[9];
+    double gains[15];
+    double fuzzy_pid[10];
 } FlashData;
 
 static gboolean
@@ -344,6 +379,10 @@ flash_done_idle(gpointer data)
     gtk_widget_set_sensitive(GTK_WIDGET(((App *)data)->btn_flash), TRUE);
     return G_SOURCE_REMOVE;
 }
+
+static void on_sudo_dialog_response(AdwDialog *dialog, char *resp, gpointer user_data);
+
+static gpointer flash_thread(gpointer data);
 
 static gboolean
 run_cmd_in_dir(App *a, const char *cwd, const char *cmd)
@@ -388,6 +427,11 @@ run_cmd_in_dir(App *a, const char *cwd, const char *cmd)
     return ok;
 }
 
+static char *fmt_float(double v)
+{
+    return g_strdup_printf("%.2ff", v);
+}
+
 static gpointer
 flash_thread(gpointer data)
 {
@@ -406,47 +450,136 @@ flash_thread(gpointer data)
     char *hpath = g_build_filename(inc, "pid_gains.h", NULL);
     g_free(inc);
 
-    FILE *f = fopen(hpath, "w");
-    if (!f) {
-        g_snprintf(msg, sizeof(msg), "Error: cannot write %s\n", hpath);
-        log_append(a, msg);
-        g_free(hpath);
-        goto done;
-    }
-    fprintf(f,
-        "#ifndef PID_GAINS_H\n#define PID_GAINS_H\n\n"
-        "/* Auto-generated by RTSpeed Configurator */\n\n"
-        "/* Iq */\n"
-        "#define IQ_KP    %gf\n#define IQ_KI    %gf\n#define IQ_KD    %gf\n\n"
-        "/* Id */\n"
-        "#define ID_KP    %gf\n#define ID_KI    %gf\n#define ID_KD    %gf\n\n"
-        "/* Speed */\n"
-        "#define SPEED_KP %gf\n#define SPEED_KI %gf\n#define SPEED_KD %gf\n\n"
-        "#endif /* PID_GAINS_H */\n",
-        fd->gains[0], fd->gains[1], fd->gains[2],
-        fd->gains[3], fd->gains[4], fd->gains[5],
-        fd->gains[6], fd->gains[7], fd->gains[8]);
+     FILE *f = fopen(hpath, "w");
+     if (!f) {
+         g_snprintf(msg, sizeof(msg), "Error: cannot write %s\nPermission denied.\n", hpath);
+         log_append(a, msg);
+
+         AdwDialog *dialog = ADW_DIALOG(adw_message_dialog_new(
+             GTK_WINDOW(a->window),
+             "Elevated Privileges Required",
+             "Cannot write to the file. Do you want to retry with sudo?"));
+         adw_message_dialog_add_response(ADW_MESSAGE_DIALOG(dialog), "cancel", "Cancel");
+         adw_message_dialog_add_response(ADW_MESSAGE_DIALOG(dialog), "sudo", "Use Sudo");
+         adw_message_dialog_set_response_appearance(
+             ADW_MESSAGE_DIALOG(dialog), "sudo", ADW_RESPONSE_DESTRUCTIVE);
+
+         FlashData *fddup = g_new0(FlashData, 1);
+         fddup->app         = a;
+         fddup->project_dir = g_strdup(fd->project_dir);
+         for (int i = 0; i < 15; i++) fddup->gains[i] = fd->gains[i];
+         for (int i = 0; i < 10;  i++) fddup->fuzzy_pid[i] = fd->fuzzy_pid[i];
+         g_object_set_data_full(G_OBJECT(dialog), "relaunch-data", fddup, g_free);
+         g_object_set_data(G_OBJECT(dialog), "app-pointer", a);
+
+         g_signal_connect(dialog, "response", G_CALLBACK(on_sudo_dialog_response), NULL);
+         gtk_window_present(GTK_WINDOW(dialog));
+
+         g_free(hpath);
+         goto done;
+     }
+      fprintf(f, "#ifndef PID_GAINS_H\n#define PID_GAINS_H\n\n");
+    fprintf(f, "/* Auto-generated by RTSpeed Configurator */\n\n");
+    fprintf(f, "/* Iq */\n");
+    fprintf(f, "#define IQ_KP  %.2ff\n#define IQ_KI  %.2ff\n#define IQ_KD  %.2ff\n#define IQ_HI  %.2ff\n#define IQ_LO  %.2ff\n\n",
+        fd->gains[0], fd->gains[1], fd->gains[2], fd->gains[3], fd->gains[4]);
+    fprintf(f, "/* Id */\n");
+    fprintf(f, "#define ID_KP  %.2ff\n#define ID_KI  %.2ff\n#define ID_KD  %.2ff\n#define ID_HI  %.2ff\n#define ID_LO  %.2ff\n\n",
+        fd->gains[5], fd->gains[6], fd->gains[7], fd->gains[8], fd->gains[9]);
+    fprintf(f, "/* Speed */\n");
+    fprintf(f, "#define SPEED_KP %.2ff\n#define SPEED_KI %.2ff\n#define SPEED_KD %.2ff\n#define SPEED_HI %.2ff\n#define SPEED_LO %.2ff\n\n",
+        fd->gains[10], fd->gains[11], fd->gains[12], fd->gains[13], fd->gains[14]);
+    fprintf(f, "/* Fuzzy PID */\n");
+    fprintf(f, "#define FUZZY_KP   %.2ff\n#define FUZZY_KI   %.2ff\n#define FUZZY_KD   %.2ff\n",
+        fd->fuzzy_pid[0], fd->fuzzy_pid[1], fd->fuzzy_pid[2]);
+    fprintf(f, "#define FUZZY_DKP  %.2ff\n#define FUZZY_DKI  %.2ff\n#define FUZZY_DKD  %.2ff\n",
+        fd->fuzzy_pid[3], fd->fuzzy_pid[4], fd->fuzzy_pid[5]);
+    fprintf(f, "#define FUZZY_SPEED_MAX %.2ff\n", fd->fuzzy_pid[6]);
+    fprintf(f, "#define FUZZY_RATE_MAX %.2ff\n", fd->fuzzy_pid[7]);
+    fprintf(f, "#define FUZZY_OUT_MAX %.2ff\n#define FUZZY_OUT_MIN %.2ff\n\n",
+        fd->fuzzy_pid[8], fd->fuzzy_pid[9]);
+    fprintf(f, "#endif /* PID_GAINS_H */\n");
     fclose(f);
 
-    g_snprintf(msg, sizeof(msg), "Wrote gains to %s\n", hpath);
-    log_append(a, msg);
-    g_free(hpath);
+     g_snprintf(msg, sizeof(msg), "Wrote gains to %s\n", hpath);
+     log_append(a, msg);
+     g_free(hpath);
 
-    log_append(a, "Building...\n");
-    if (!run_cmd_in_dir(a, fd->project_dir, fd->build_cmd)) goto done;
-
-    log_append(a, "Flashing...\n");
-    if (!run_cmd_in_dir(a, fd->project_dir, fd->flash_cmd)) goto done;
-
-    log_append(a, "Done!\n");
+     log_append(a, "Done!\n");
 
 done:
-    g_free(fd->project_dir);
-    g_free(fd->build_cmd);
-    g_free(fd->flash_cmd);
-    g_free(fd);
-    g_idle_add(flash_done_idle, a);
-    return NULL;
+     g_free(fd->project_dir);
+     g_free(fd);
+     g_idle_add(flash_done_idle, a);
+     return NULL;
+}
+
+static void
+on_sudo_dialog_response(AdwDialog *dialog, char *resp, gpointer user_data)
+{
+    (void)user_data;
+    FlashData *fd = g_object_get_data(G_OBJECT(dialog), "relaunch-data");
+    App *app = g_object_get_data(G_OBJECT(dialog), "app-pointer");
+    if (g_strcmp0(resp, "sudo") == 0 && fd) {
+        gtk_window_destroy(GTK_WINDOW(dialog));
+
+        gtk_widget_set_sensitive(GTK_WIDGET(app->btn_flash), FALSE);
+        gtk_text_buffer_set_text(app->log_buf, "", -1);
+        log_append(app, "Running with elevated privileges...\n");
+
+        char *inc = g_build_filename(fd->project_dir, "Core", "Inc", NULL);
+        if (!g_file_test(inc, G_FILE_TEST_IS_DIR)) {
+            g_free(inc);
+            inc = g_build_filename(fd->project_dir, "Inc", NULL);
+        }
+        char *hpath = g_build_filename(inc, "pid_gains.h", NULL);
+        g_free(inc);
+
+        GString *content = g_string_new(NULL);
+        g_string_append(content, "#ifndef PID_GAINS_H\n#define PID_GAINS_H\n\n");
+        g_string_append(content, "/* Auto-generated by RTSpeed Configurator */\n\n");
+        g_string_append(content, "/* Iq */\n");
+        g_string_append_printf(content, "#define IQ_KP  %.2ff\n#define IQ_KI  %.2ff\n#define IQ_KD  %.2ff\n#define IQ_HI  %.2ff\n#define IQ_LO  %.2ff\n\n",
+            fd->gains[0], fd->gains[1], fd->gains[2], fd->gains[3], fd->gains[4]);
+        g_string_append(content, "/* Id */\n");
+        g_string_append_printf(content, "#define ID_KP  %.2ff\n#define ID_KI  %.2ff\n#define ID_KD  %.2ff\n#define ID_HI  %.2ff\n#define ID_LO  %.2ff\n\n",
+            fd->gains[5], fd->gains[6], fd->gains[7], fd->gains[8], fd->gains[9]);
+        g_string_append(content, "/* Speed */\n");
+        g_string_append_printf(content, "#define SPEED_KP %.2ff\n#define SPEED_KI %.2ff\n#define SPEED_KD %.2ff\n#define SPEED_HI %.2ff\n#define SPEED_LO %.2ff\n\n",
+            fd->gains[10], fd->gains[11], fd->gains[12], fd->gains[13], fd->gains[14]);
+        g_string_append(content, "/* Fuzzy PID */\n");
+        g_string_append_printf(content, "#define FUZZY_KP   %.2ff\n#define FUZZY_KI   %.2ff\n#define FUZZY_KD   %.2ff\n",
+            fd->fuzzy_pid[0], fd->fuzzy_pid[1], fd->fuzzy_pid[2]);
+        g_string_append_printf(content, "#define FUZZY_DKP  %.2ff\n#define FUZZY_DKI  %.2ff\n#define FUZZY_DKD  %.2ff\n",
+            fd->fuzzy_pid[3], fd->fuzzy_pid[4], fd->fuzzy_pid[5]);
+        g_string_append_printf(content, "#define FUZZY_SPEED_MAX %.2ff\n", fd->fuzzy_pid[6]);
+        g_string_append_printf(content, "#define FUZZY_RATE_MAX %.2ff\n", fd->fuzzy_pid[7]);
+        g_string_append_printf(content, "#define FUZZY_OUT_MAX %.2ff\n#define FUZZY_OUT_MIN %.2ff\n\n",
+            fd->fuzzy_pid[8], fd->fuzzy_pid[9]);
+        g_string_append(content, "#endif /* PID_GAINS_H */\n");
+
+        char cmd[16384];
+        g_snprintf(cmd, sizeof(cmd), "pkexec tee %s << 'ENDOFFILE'\n%sENDOFFILE", hpath, content->str);
+        g_string_free(content, TRUE);
+        g_free(hpath);
+
+        if (run_cmd_in_dir(app, fd->project_dir, cmd)) {
+            log_append(app, "Wrote pid_gains.h with sudo\n");
+            log_append(app, "Done!\n");
+        } else {
+            log_append(app, "Failed to write file\n");
+        }
+
+        gtk_widget_set_sensitive(GTK_WIDGET(app->btn_flash), TRUE);
+
+        g_free(fd->project_dir);
+        g_free(fd);
+    } else if (fd) {
+        g_free(fd->project_dir);
+        g_free(fd);
+        if (app) gtk_widget_set_sensitive(GTK_WIDGET(app->btn_flash), TRUE);
+    }
+    gtk_window_destroy(GTK_WINDOW(dialog));
 }
 
 /* ── Configure page callbacks ───────────────────────────────────── */
@@ -489,10 +622,12 @@ on_load_preset(GtkButton *btn, gpointer user_data)
         gtk_drop_down_get_selected_item(a->combo_presets));
     if (!item) return;
     const char *name = gtk_string_object_get_string(item);
-    JNode *pnode = g_hash_table_lookup(a->presets->obj, name);
-    if (!pnode) return;
-    for (int i = 0; i < 9; i++)
-        gtk_spin_button_set_value(a->spins[i], jn_num(pnode, GAIN_KEYS[i], GAIN_DEFAULTS[i]));
+     JNode *pnode = g_hash_table_lookup(a->presets->obj, name);
+     if (!pnode) return;
+     for (int i = 0; i < 15; i++)
+         gtk_spin_button_set_value(a->spins[i], jn_num(pnode, GAIN_KEYS[i], GAIN_DEFAULTS[i]));
+     for (int i = 0; i < 9; i++)
+         gtk_spin_button_set_value(a->spins[15 + i], jn_num(pnode, FUZZY_PID_KEYS[i], FUZZY_PID_DEFAULTS[i]));
 }
 
 static void
@@ -502,15 +637,20 @@ on_save_preset(GtkButton *btn, gpointer user_data)
     const char *name = gtk_editable_get_text(GTK_EDITABLE(a->entry_preset_name));
     if (!name || !name[0]) return;
 
-    JNode *pnode = jn_new(JN_OBJ);
-    pnode->obj = jn_new_obj_table();
-    for (int i = 0; i < 9; i++) {
-        JNode *vn = jn_new(JN_NUM);
-        vn->num = gtk_spin_button_get_value(a->spins[i]);
-        g_hash_table_insert(pnode->obj, g_strdup(GAIN_KEYS[i]), vn);
-    }
+     JNode *pnode = jn_new(JN_OBJ);
+     pnode->obj = jn_new_obj_table();
+     for (int i = 0; i < 15; i++) {
+         JNode *vn = jn_new(JN_NUM);
+         vn->num = gtk_spin_button_get_value(a->spins[i]);
+         g_hash_table_insert(pnode->obj, g_strdup(GAIN_KEYS[i]), vn);
+     }
+     for (int i = 0; i < 9; i++) {
+         JNode *vn = jn_new(JN_NUM);
+         vn->num = gtk_spin_button_get_value(a->spins[15 + i]);
+         g_hash_table_insert(pnode->obj, g_strdup(FUZZY_PID_KEYS[i]), vn);
+     }
 
-    gboolean is_new = !g_hash_table_contains(a->presets->obj, name);
+     gboolean is_new = !g_hash_table_contains(a->presets->obj, name);
     g_hash_table_insert(a->presets->obj, g_strdup(name), pnode);
 
     if (is_new) gtk_string_list_append(a->preset_model, name);
@@ -555,15 +695,18 @@ on_flash_clicked(GtkButton *btn, gpointer user_data)
         log_append(a, "Error: select a project directory in Configure first.\n");
         return;
     }
+    if (gtk_widget_get_sensitive(GTK_WIDGET(a->btn_flash)) == FALSE) {
+        return;
+    }
     gtk_widget_set_sensitive(GTK_WIDGET(a->btn_flash), FALSE);
     gtk_text_buffer_set_text(a->log_buf, "", -1);
 
     FlashData *fd   = g_new0(FlashData, 1);
     fd->app         = a;
     fd->project_dir = g_strdup(a->project_dir);
-    fd->build_cmd   = g_strdup(gtk_editable_get_text(GTK_EDITABLE(a->row_build)));
-    fd->flash_cmd   = g_strdup(gtk_editable_get_text(GTK_EDITABLE(a->row_flash)));
-    for (int i = 0; i < 9; i++) fd->gains[i] = gtk_spin_button_get_value(a->spins[i]);
+    for (int i = 0; i < 15; i++) fd->gains[i] = gtk_spin_button_get_value(a->spins[i]);
+    for (int i = 0; i < 10;  i++) fd->fuzzy_pid[i] = gtk_spin_button_get_value(a->spins[15 + i]);
+    
     g_thread_new("flash", flash_thread, fd);
 }
 
@@ -601,37 +744,14 @@ setup_configure_page(App *a, AdwViewStack *stack)
     GtkButton *b_save = GTK_BUTTON(gtk_button_new_with_label("Save Configuration"));
     gtk_widget_add_css_class(GTK_WIDGET(b_save), "suggested-action");
     gtk_widget_add_css_class(GTK_WIDGET(b_save), "pill");
-    gtk_widget_set_halign(GTK_WIDGET(b_save), GTK_ALIGN_END);
+    gtk_widget_set_halign(GTK_WIDGET(b_save), GTK_ALIGN_CENTER);
     gtk_widget_set_margin_top(GTK_WIDGET(b_save), 8);
     g_signal_connect(b_save, "clicked", G_CALLBACK(on_save_config), a);
     adw_preferences_group_add(grp, GTK_WIDGET(b_save));
     adw_preferences_page_add(page, grp);
 
-    /* Gain groups */
-    static const char *ctrl_names[3] = {
-        "Current Controller (Iq)", "Current Controller (Id)", "Speed Controller",
-    };
-    for (int c = 0; c < 3; c++) {
-        AdwPreferencesGroup *g2 = ADW_PREFERENCES_GROUP(adw_preferences_group_new());
-        adw_preferences_group_set_title(g2, ctrl_names[c]);
-        for (int k = 0; k < 3; k++) {
-            int idx = c * 3 + k;
-            GtkSpinButton *spin = GTK_SPIN_BUTTON(
-                gtk_spin_button_new_with_range(0.0, 10000.0, 0.01));
-            gtk_spin_button_set_value(spin, a->gains[idx]);
-            gtk_widget_set_valign(GTK_WIDGET(spin), GTK_ALIGN_CENTER);
-            a->spins[idx] = spin;
-            AdwActionRow *row = ADW_ACTION_ROW(adw_action_row_new());
-            adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), GAIN_LABELS[idx]);
-            adw_action_row_add_suffix(row, GTK_WIDGET(spin));
-            adw_preferences_group_add(g2, GTK_WIDGET(row));
-        }
-        adw_preferences_page_add(page, g2);
-    }
-
-    /* Presets group */
-    AdwPreferencesGroup *gp = ADW_PREFERENCES_GROUP(adw_preferences_group_new());
-    adw_preferences_group_set_title(gp, "Presets");
+    AdwPreferencesGroup *presets_grp = ADW_PREFERENCES_GROUP(adw_preferences_group_new());
+    adw_preferences_group_set_title(presets_grp, "Presets");
 
     a->preset_model  = gtk_string_list_new(NULL);
     a->combo_presets = GTK_DROP_DOWN(
@@ -660,7 +780,7 @@ setup_configure_page(App *a, AdwViewStack *stack)
     gtk_widget_set_valign(GTK_WIDGET(b_del), GTK_ALIGN_CENTER);
     g_signal_connect(b_del, "clicked", G_CALLBACK(on_delete_preset), a);
     adw_action_row_add_suffix(row_manage, GTK_WIDGET(b_del));
-    adw_preferences_group_add(gp, GTK_WIDGET(row_manage));
+    adw_preferences_group_add(presets_grp, GTK_WIDGET(row_manage));
 
     AdwActionRow *row_savep = ADW_ACTION_ROW(adw_action_row_new());
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row_savep), "Save Current As...");
@@ -674,8 +794,76 @@ setup_configure_page(App *a, AdwViewStack *stack)
     gtk_widget_set_valign(GTK_WIDGET(b_savep), GTK_ALIGN_CENTER);
     g_signal_connect(b_savep, "clicked", G_CALLBACK(on_save_preset), a);
     adw_action_row_add_suffix(row_savep, GTK_WIDGET(b_savep));
-    adw_preferences_group_add(gp, GTK_WIDGET(row_savep));
-    adw_preferences_page_add(page, gp);
+    adw_preferences_group_add(presets_grp, GTK_WIDGET(row_savep));
+    adw_preferences_page_add(page, presets_grp);
+
+    AdwPreferencesGroup *ctrl_grp = ADW_PREFERENCES_GROUP(adw_preferences_group_new());
+    adw_preferences_group_set_title(ctrl_grp, "Controller Parameters");
+
+    static const char *ctrl_names[4] = {
+        "Current (Iq)", "Current (Id)", "Speed", "Fuzzy PID",
+    };
+    int ctrl_count = 4;
+
+    GtkBox *ctrl_grid = GTK_BOX(gtk_box_new(GTK_ORIENTATION_VERTICAL, 12));
+    gtk_widget_set_hexpand(GTK_WIDGET(ctrl_grid), TRUE);
+
+    for (int c = 0; c < ctrl_count; c++) {
+        AdwPreferencesGroup *g2 = ADW_PREFERENCES_GROUP(adw_preferences_group_new());
+        adw_preferences_group_set_title(g2, ctrl_names[c]);
+        gtk_widget_set_hexpand(GTK_WIDGET(g2), TRUE);
+        gtk_box_append(ctrl_grid, GTK_WIDGET(g2));
+
+        int rows = (c == 3) ? 10 : 5;
+        int base_idx = (c == 3) ? 15 : (c * 5);
+
+        for (int k = 0; k < rows; k++) {
+            int idx = base_idx + k;
+            double min_val, max_val, step_val;
+            const char *label;
+
+            if (c == 3) {
+                if (k == 6) {
+                    min_val = 0.0; max_val = 50000.0; step_val = 0.01;
+                } else if (k == 7) {
+                    min_val = 0.0; max_val = 50000.0; step_val = 0.01;
+                } else if (k == 8 || k == 9) {
+                    min_val = -100000.0; max_val = 100000.0; step_val = 0.01;
+                } else {
+                    min_val = 0.0; max_val = 10000.0; step_val = 0.01;
+                }
+                label = FUZZY_PID_LABELS[k];
+            } else {
+                gboolean is_hi = (k == 3);
+                gboolean is_lo = (k == 4);
+                if (is_hi) {
+                    min_val = 0.0; max_val = 1000000.0; step_val = 0.01;
+                } else if (is_lo) {
+                    min_val = -1000000.0; max_val = 1000000.0; step_val = 0.01;
+                } else {
+                    min_val = 0.0; max_val = 10000.0; step_val = 0.01;
+                }
+                label = GAIN_LABELS[idx];
+            }
+
+            GtkSpinButton *spin = GTK_SPIN_BUTTON(
+                gtk_spin_button_new_with_range(min_val, max_val, step_val));
+            gtk_spin_button_set_digits(spin, 2);
+            gtk_spin_button_set_value(spin, (c == 3) ? a->fuzzy_pid[k] : a->gains[idx]);
+            gtk_widget_set_valign(GTK_WIDGET(spin), GTK_ALIGN_CENTER);
+            gtk_widget_set_size_request(GTK_WIDGET(spin), 180, -1);
+            GtkEventController *scroll = gtk_event_controller_scroll_new(GTK_EVENT_CONTROLLER_SCROLL_NONE);
+            gtk_widget_add_controller(GTK_WIDGET(spin), scroll);
+            a->spins[idx] = spin;
+            AdwActionRow *row = ADW_ACTION_ROW(adw_action_row_new());
+            adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), label);
+            adw_action_row_add_suffix(row, GTK_WIDGET(spin));
+            adw_preferences_group_add(g2, GTK_WIDGET(row));
+        }
+    }
+
+    adw_preferences_group_add(ctrl_grp, GTK_WIDGET(ctrl_grid));
+    adw_preferences_page_add(page, ctrl_grp);
 
     adw_view_stack_add_titled_with_icon(stack, GTK_WIDGET(page),
         "configure", "Configure", "preferences-system-symbolic");
@@ -691,13 +879,13 @@ setup_flash_page(App *a, AdwViewStack *stack)
     gtk_widget_set_margin_end(GTK_WIDGET(box), 24);
 
     AdwStatusPage *status = ADW_STATUS_PAGE(adw_status_page_new());
-    adw_status_page_set_title(status, "Flash Firmware");
+    adw_status_page_set_title(status, "Save Configuration");
     adw_status_page_set_description(status,
-        "Apply current gains, rebuild, and flash to the STM32 via ST-Link V2");
+        "Apply current gains and save to pid_gains.h");
     adw_status_page_set_icon_name(status, "drive-harddisk-symbolic");
     gtk_box_append(box, GTK_WIDGET(status));
 
-    a->btn_flash = GTK_BUTTON(gtk_button_new_with_label("Apply and Flash"));
+    a->btn_flash = GTK_BUTTON(gtk_button_new_with_label("Save to File"));
     gtk_widget_add_css_class(GTK_WIDGET(a->btn_flash), "suggested-action");
     gtk_widget_add_css_class(GTK_WIDGET(a->btn_flash), "pill");
     gtk_widget_set_halign(GTK_WIDGET(a->btn_flash), GTK_ALIGN_CENTER);
@@ -708,10 +896,18 @@ setup_flash_page(App *a, AdwViewStack *stack)
     GtkWidget *tv = gtk_text_view_new_with_buffer(a->log_buf);
     gtk_text_view_set_editable(GTK_TEXT_VIEW(tv), FALSE);
     gtk_text_view_set_monospace(GTK_TEXT_VIEW(tv), TRUE);
+    gtk_widget_set_margin_top(tv, 2);
+    gtk_widget_set_margin_bottom(tv, 2);
+    gtk_widget_set_margin_start(tv, 2);
+    gtk_widget_set_margin_end(tv, 2);
 
     a->log_scroll = GTK_SCROLLED_WINDOW(gtk_scrolled_window_new());
     gtk_scrolled_window_set_child(a->log_scroll, tv);
     gtk_widget_set_vexpand(GTK_WIDGET(a->log_scroll), TRUE);
+    gtk_widget_set_margin_top(GTK_WIDGET(a->log_scroll), 2);
+    gtk_widget_set_margin_bottom(GTK_WIDGET(a->log_scroll), 2);
+    gtk_widget_set_margin_start(GTK_WIDGET(a->log_scroll), 2);
+    gtk_widget_set_margin_end(GTK_WIDGET(a->log_scroll), 2);
 
     GtkFrame *frame = GTK_FRAME(gtk_frame_new(NULL));
     gtk_frame_set_child(frame, GTK_WIDGET(a->log_scroll));
@@ -785,6 +981,8 @@ on_activate(GApplication *gapp, gpointer user_data)
 int
 main(int argc, char *argv[])
 {
+    g_setenv("GDK_GL", "disable", TRUE);
+
     App a = {0};
     config_load(&a);
 
